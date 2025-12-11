@@ -1,1 +1,7 @@
 .temp
+data/
+logs/
+*/__pycache__/
+checkpoints/
+run_experiments.py
+plot_results.py
