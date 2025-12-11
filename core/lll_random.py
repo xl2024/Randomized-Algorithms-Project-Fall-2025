@@ -1,5 +1,6 @@
 import torch
 import math
+import random
 
 class LLLRandom:
     def __init__(self, masker, model, total_steps, min_fan_in=1, max_fan_in=None, min_fan_out=1, max_fan_out=None):
@@ -42,43 +43,37 @@ class LLLRandom:
                         
         return bad_events
 
-    def resample(self, bad_events):
-        if not bad_events:
-            return 0
-
-        resampled_count = 0
-
-        for event in bad_events:
-            layer_name = event['layer']
-            indices = event['indices']
-            mask = self.masker.masks[layer_name]
-            target_density = self.masker.density
-            
-            for idx in indices:
-                idx = idx.item()
-                resampled_count += 1
-                
-                if event['type'] == 'neuron_in':
-                    # Target: mask[idx, :]
-                    row_len = mask.shape[1]
+    def resample(self):
+        resampled_count = 0    
+        for i in range(1000):
+            healthy = True
+            for name, mask in self.masker.masks.items():
+                bad_events = self.check_bad_events(name)
+                if bad_events:
+                    healthy = False
+                    event = random.choice(bad_events)
+                    indices = event['indices']
+                    target_density = self.masker.density
                     
-                    new_row = (torch.rand(row_len, device=mask.device) < target_density).float()
-                    
-                    # if self.min_fan_in >= 1 and new_row.sum() == 0:
-                    #     new_row[torch.randint(0, row_len, (1,))] = 1.0
+                    for idx in indices:
+                        idx = idx.item()
+                        resampled_count += 1
+                        
+                        if event['type'] == 'neuron_in':
+                            row_len = mask.shape[1]
+                            new_row = (torch.rand(row_len, device=mask.device) < target_density).float()
+                            mask[idx, :] = new_row
 
-                    mask[idx, :] = new_row
+                        elif event['type'] == 'neuron_out':
+                            col_len = mask.shape[0]
+                            new_col = (torch.rand(col_len, device=mask.device) < target_density).float()
+                            mask[:, idx] = new_col
 
-                elif event['type'] == 'neuron_out':
-                    # Target: mask[:, idx]
-                    col_len = mask.shape[0]
-                    
-                    new_col = (torch.rand(col_len, device=mask.device) < target_density).float()
-                    
-                    # if self.min_fan_out >= 1 and new_col.sum() == 0:
-                    #     new_col[torch.randint(0, col_len, (1,))] = 1.0
+            if healthy:
+                break
 
-                    mask[:, idx] = new_col
+        if resampled_count > 0:
+            self.masker.apply_mask_to_weights()
 
         return resampled_count
 
@@ -87,6 +82,7 @@ class LLLRandom:
         current_fraction = start_fraction * 0.5 * (1 + math.cos(math.pi * current_step / self.total_steps))
         
         params = dict(self.model.named_parameters())
+        active_connections = {}
 
         for name, mask in self.masker.masks.items():
             param = params[name]
@@ -95,8 +91,8 @@ class LLLRandom:
             if grad is None:
                 continue
 
-            active_connections = mask.sum().item()
-            num_to_swap = int(active_connections * current_fraction)
+            active_connections[name] = mask.sum().item()
+            num_to_swap = int(active_connections[name] * current_fraction)
             
             if num_to_swap == 0:
                 continue
@@ -108,16 +104,14 @@ class LLLRandom:
             mask_flat = mask.view(-1)
             mask_flat[prune_indices] = 0.0
 
-            # MT resampling algorithm, try for 1000 times
-            for i in range(1000):
-                bad_events = self.check_bad_events(name)
-                if bad_events:
-                    self.resample(bad_events)
-                    self.masker.apply_mask_to_weights()
-                else:
-                    break
-            
-            num_to_grow = int(active_connections - mask.sum().item())
+        # MT resampling algorithm, try for 1000 times
+        self.resample()
+                
+        for name, mask in self.masker.masks.items():
+            param = params[name]
+            mask_flat = mask.view(-1)
+
+            num_to_grow = int(active_connections[name] - mask.sum().item())
             
             if num_to_grow <= 0:
                 continue
