@@ -4,14 +4,14 @@ import torch.optim as optim
 import argparse
 from tqdm import tqdm
 import os
+import random
+import numpy as np
 
 from models.mlp_cifar import MLP_CIFAR
 from utils.masking import Masker
 from utils.data_loader import get_cifar_loaders
-from core.lll_rigl import LLLResampler
-from core.lll_random import LLLRandom
+from core.lll_sampler import LLLResampler
 from core.rigl_sampler import RigLSampler
-from core.random_sampler import RandomSampler
 
 def count_dead_neurons(masker):
     dead_count = 0
@@ -38,9 +38,8 @@ def main():
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.1)
     parser.add_argument('--sparsity', type=float, default=0.9)
-    
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--interval', type=int, default=100)
-    
     parser.add_argument('--min_fan_in', type=int, default=1)
     parser.add_argument('--max_fan_in', type=int, default=None)
     parser.add_argument('--min_fan_out', type=int, default=1)
@@ -48,6 +47,13 @@ def main():
     
     args = parser.parse_args()
 
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    print(f"--- Seed set to {args.seed} ---")
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"--- Experiment: {args.dataset.upper()} | {args.method.upper()} | Sparsity: {args.sparsity} ---")
 
@@ -64,34 +70,26 @@ def main():
     sampler = None
     total_steps = args.epochs * len(trainloader)
     max_rigl_steps = int(total_steps * 0.75)
-    
-    if args.method == 'lll':
+    convergence_log = None
+    if args.method in ['lll', 'lrandom']:
+        if args.sparsity >= 0.98:
+            convergence_log = f"logs/{args.dataset}_{args.method}_s{args.sparsity}_seed{args.seed}_convergence.csv"
+            with open(convergence_log, "w") as f:
+                f.write("Epoch,AvgLoops,MaxLoops\n")
+
         sampler = LLLResampler(masker, 
                                model,
+                               args.method,
                                total_steps,
                                min_fan_in=args.min_fan_in, 
                                max_fan_in=args.max_fan_in,
                                min_fan_out=args.min_fan_out,
                                max_fan_out=args.max_fan_out)
-        print(f"LLL initialized.")
+
+    elif args.method in ['rigl', 'random']:
+        sampler = RigLSampler(masker, model, args.method, total_steps)
     
-    elif args.method == 'lrandom':
-        sampler = LLLRandom(masker, 
-                               model,
-                               total_steps,
-                               min_fan_in=args.min_fan_in, 
-                               max_fan_in=args.max_fan_in,
-                               min_fan_out=args.min_fan_out,
-                               max_fan_out=args.max_fan_out)
-        print(f"LLL Random initialized.")
-
-    elif args.method == 'random':
-        sampler = RandomSampler(masker, model, total_steps)
-        print("Random Sparse initialized.")
-
-    elif args.method == 'rigl':
-        sampler = RigLSampler(masker, model, total_steps)
-        print(f"RigL initialized. Updates every {args.interval} steps.")
+    print(f"{args.method} initialized. Updates every {args.interval} steps.")
         
     # Optimization
     criterion = nn.CrossEntropyLoss()
@@ -102,7 +100,7 @@ def main():
     if not os.path.exists('logs'):
         os.makedirs('logs')
     
-    log_filename = f"logs/{args.dataset}_{args.method}_s{args.sparsity}.txt"
+    log_filename = f"logs/{args.dataset}_{args.method}_s{args.sparsity}_seed{args.seed}.txt"
     print(f"Logging to: {log_filename}")
     
     with open(log_filename, "w") as f:
@@ -115,6 +113,7 @@ def main():
     for epoch in range(args.epochs):
         model.train()  # training mode
         pbar = tqdm(trainloader, desc=f'Epoch {epoch+1}/{args.epochs}')
+        loops_per_epoch = []
         
         for inputs, targets in pbar:
             inputs, targets = inputs.to(device), targets.to(device)
@@ -126,7 +125,10 @@ def main():
             loss.backward()  # Calculate new gradients
             
             if global_step < max_rigl_steps and global_step % args.interval == 0:
-                sampler.step(global_step)
+                frac_and_loops = sampler.step(global_step)
+                if args.method in ['lll', 'lrandom']:
+                    _, loops = frac_and_loops
+                    loops_per_epoch.extend(loops)
 
             masker.apply_mask_to_gradients()
             optimizer.step()  # Update weights
@@ -135,6 +137,12 @@ def main():
             _, predicted = outputs.max(1)  # dimension 1 = the class dimension -> (max_score(1D tensor), index(1D tensor))
             acc = 100. * predicted.eq(targets).sum().item()/targets.size(0)
             pbar.set_postfix({'Acc': f"{acc:.1f}%"})
+
+        if convergence_log and len(loops_per_epoch) > 0:
+            avg_loops = sum(loops_per_epoch) / len(loops_per_epoch)
+            max_loops = max(loops_per_epoch)
+            with open(convergence_log, "a") as f:
+                f.write(f"{epoch+1},{avg_loops:.2f},{max_loops}\n")
 
         # Validation
         model.eval()
@@ -159,7 +167,7 @@ def main():
             best_acc = acc
             if not os.path.exists('./checkpoints'):
                 os.makedirs('./checkpoints')
-            torch.save(model.state_dict(), f'./checkpoints/best_{args.method}_mlp.pth')
+            torch.save(model.state_dict(), f'./checkpoints/best_{args.method}_{args.dataset}_s{args.sparsity}_seed{args.seed}.pth')
             
         scheduler.step()
 

@@ -2,9 +2,10 @@ import torch
 import math
 
 class RigLSampler:
-    def __init__(self, masker, model, total_steps):
+    def __init__(self, masker, model, method, total_steps):
         self.masker = masker
         self.model = model
+        self.method = method
         self.total_steps = total_steps
         
     def step(self, current_step):
@@ -12,8 +13,12 @@ class RigLSampler:
         Performs one RigL update:
         1. Prune: Remove weights with smallest magnitude.
         2. Grow: Add connections with largest gradient magnitude.
+
+        Naive Random Resampling:
+        1. Prune: Remove weights with smallest magnitude.
+        2. Grow: Randomly Grow new connections (Ignorant of gradient).
         """
-        # RigL Decay: We swap fewer connections as training progresses
+        # swap fewer connections as training progresses
         start_fraction = 0.3 
         current_fraction = start_fraction * 0.5 * (1 + math.cos(math.pi * current_step / self.total_steps))
         
@@ -39,10 +44,17 @@ class RigLSampler:
             mask_flat = mask.view(-1)
             mask_flat[prune_indices] = 0.0
             
-            # --- 2. GROW (Largest Gradient) ---
-            grad_abs = torch.abs(grad)
-            grad_abs[mask == 1] = -float('inf')
-            _, grow_indices = torch.topk(grad_abs.view(-1), k=num_to_swap, largest=True)  # k largest gradients
+            # --- 2. GROW (Largest Gradient / Randomly) ---
+            if self.method == 'rigl':
+                grad_abs = torch.abs(grad)
+                grad_abs[mask == 1] = -float('inf')
+                _, grow_indices = torch.topk(grad_abs.view(-1), k=num_to_swap, largest=True)  # k largest gradients
+            else:
+                empty_indices = (mask_flat == 0).nonzero().view(-1)
+                actual_grow = min(num_to_swap, empty_indices.size(0))
+                perm = torch.randperm(empty_indices.size(0))
+                grow_indices = empty_indices[perm[:actual_grow]]
+                
             mask_flat[grow_indices] = 1.0
             with torch.no_grad():
                 param.view(-1)[grow_indices] = 0.0   # New weights start at 0 (Standard RigL)

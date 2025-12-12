@@ -3,5 +3,6 @@ data/
 logs/
 */__pycache__/
 checkpoints/
+plots/
 run_experiments.py
 plot_results.py
