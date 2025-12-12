@@ -106,7 +106,7 @@ def main():
     print(f"Logging to: {log_filename}")
     
     with open(log_filename, "w") as f:
-        f.write("Epoch\tAccuracy\tDead\tIgnored\n")
+        f.write("Epoch\tAccuracy\tDeadNeurons\tIgnoredNeurons\n")
 
     # training
     best_acc = 0
@@ -153,7 +153,7 @@ def main():
         print(f"Val Acc: {acc:.2f}% | Dead(In): {dead}/{total_n} | Ignored(Out): {ignored}")
         
         with open(log_filename, "a") as f:  # Append
-            f.write(f"{epoch+1}\t\t{acc:.2f}\t\t{dead}\t\t{ignored}\n")
+            f.write(f"{epoch+1}\t{acc:.2f}\t{dead}\t{ignored}\n")
 
         if acc > best_acc:
             best_acc = acc
