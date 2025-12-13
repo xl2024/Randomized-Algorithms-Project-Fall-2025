@@ -109,6 +109,11 @@ class LLLResampler:
             num_to_grow = int(active_connections - mask.sum().item())
             
             if num_to_grow <= 0:
+                excess = abs(num_to_grow)
+                weight_abs = torch.abs(param.data * mask)
+                weight_abs[mask == 0] = float('inf')
+                _, extra_prune_idx = torch.topk(weight_abs.view(-1), k=excess, largest=False)
+                mask.view(-1)[extra_prune_idx] = 0.0
                 continue
             
             # --- 2. GROW (Largest Gradient / Randomly) ---

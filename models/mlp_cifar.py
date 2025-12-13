@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MLP(nn.Module):
-    def __init__(self, num_classes=10, hidden_dim=128, depth=4):
+    def __init__(self, num_classes=10, hidden_dim=1024, depth=4):
         super(MLP, self).__init__()
         
         input_dim = 32*32*3

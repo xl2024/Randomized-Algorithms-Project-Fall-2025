@@ -30,6 +30,14 @@ def count_dead_neurons(masker):
 
     return dead_count, ignored_inputs, total_neurons
 
+def get_global_density(masker):
+    total_params = 0
+    active_params = 0
+    for mask in masker.masks.values():
+        total_params += mask.numel()
+        active_params += mask.sum().item()
+    return active_params / total_params if total_params > 0 else 0.0
+
 def main():
     parser = argparse.ArgumentParser(description='Sparse MLP')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'])
@@ -104,7 +112,7 @@ def main():
     print(f"Logging to: {log_filename}")
     
     with open(log_filename, "w") as f:
-        f.write("Epoch\tAccuracy\tDeadNeurons\tIgnoredNeurons\n")
+        f.write("Epoch\tAccuracy\tDeadNeurons\tIgnoredNeurons\tDensity\n")
 
     # training
     best_acc = 0
@@ -158,10 +166,11 @@ def main():
         
         acc = 100. * correct / total
         dead, ignored, total_n = count_dead_neurons(masker)
-        print(f"Val Acc: {acc:.2f}% | Dead(In): {dead}/{total_n} | Ignored(Out): {ignored}")
+        density = get_global_density(masker)
+        print(f"Val Acc: {acc:.2f}% | Dead(In): {dead}/{total_n} | Ignored(Out): {ignored} | Density: {density:.6f}")
         
         with open(log_filename, "a") as f:  # Append
-            f.write(f"{epoch+1}\t{acc:.2f}\t{dead}\t{ignored}\n")
+            f.write(f"{epoch+1}\t{acc:.2f}\t{dead}\t{ignored}\t{density:.6f}\n")
 
         if acc > best_acc:
             best_acc = acc
